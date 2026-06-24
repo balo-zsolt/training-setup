@@ -53,21 +53,27 @@ if (-not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Adm
 #     winget show --id <PackageId> --versions
 # ===========================================================================
 $Versions = @{
-    Jdk        = '21.0.5+11'    # winget: EclipseAdoptium.Temurin.21.JDK
-    Node       = '22.11.0'      # winget: OpenJS.NodeJS.LTS
-    Maven      = '3.9.9'        # winget: Apache.Maven
-    Vscode     = '1.96.2'       # winget: Microsoft.VisualStudioCode
-    PgAdmin    = '8.13'         # winget: PostgreSQL.pgAdmin
-    AngularCli = '18.2.12'      # npm:    @angular/cli
+    Jdk        = '25.0.3.9'     # winget: EclipseAdoptium.Temurin.25.JDK (winget uses dot-separated build, not '+9')
+    Node       = '24.18.0'      # winget: OpenJS.NodeJS.LTS
+    Maven      = '3.9.16'       # direct download from Apache (no longer published on winget) - see Install-Maven
+    Vscode     = '1.125.1'      # winget: Microsoft.VisualStudioCode
+    PgAdmin    = '9.16'         # winget: PostgreSQL.pgAdmin
+    Git        = '2.54.0'       # winget: Git.Git
+    Az         = '2.87.0'       # winget: Microsoft.AzureCLI
+    AngularCli = '22.0.4'       # npm:    @angular/cli (engines require Node ^22.22.3 || ^24.15.0 - met by Node pin)
 }
 
 $Packages = @(
-    @{ Id = 'EclipseAdoptium.Temurin.21.JDK'; Version = $Versions.Jdk;     Name = 'Eclipse Temurin JDK 21' }
+    @{ Id = 'EclipseAdoptium.Temurin.25.JDK'; Version = $Versions.Jdk;     Name = 'Eclipse Temurin JDK 25' }
     @{ Id = 'OpenJS.NodeJS.LTS';              Version = $Versions.Node;    Name = 'Node.js LTS' }
-    @{ Id = 'Apache.Maven';                   Version = $Versions.Maven;   Name = 'Apache Maven' }
     @{ Id = 'Microsoft.VisualStudioCode';     Version = $Versions.Vscode;  Name = 'Visual Studio Code' }
     @{ Id = 'PostgreSQL.pgAdmin';             Version = $Versions.PgAdmin; Name = 'pgAdmin 4' }
+    @{ Id = 'Git.Git';                        Version = $Versions.Git;     Name = 'Git' }
+    @{ Id = 'Microsoft.AzureCLI';             Version = $Versions.Az;      Name = 'Azure CLI' }
 )
+# NOTE: Apache Maven is no longer published on the winget repository (the
+# 'Apache.Maven' package was removed), so it is installed separately from the
+# official Apache distribution by Install-Maven below - NOT via $Packages.
 # ===========================================================================
 
 $logFile = Join-Path $env:TEMP "training-setup-$(Get-Date -Format 'yyyyMMdd-HHmmss').log"
@@ -90,17 +96,70 @@ function Install-WingetPackage {
         --id $Id `
         --version $Version `
         --exact `
+        --source winget `
         --silent `
+        --disable-interactivity `
         --accept-source-agreements `
         --accept-package-agreements
     # winget exit codes worth tolerating:
     #   0           = success
     #  -1978335189  = already installed at this version (UPDATE_NOT_APPLICABLE)
     #  -1978335212  = no applicable upgrade found
-    if ($LASTEXITCODE -ne 0 -and
-        $LASTEXITCODE -ne -1978335189 -and
-        $LASTEXITCODE -ne -1978335212) {
-        throw "winget install failed for $Id (exit code $LASTEXITCODE)"
+    if ($LASTEXITCODE -eq 0 -or
+        $LASTEXITCODE -eq -1978335189 -or
+        $LASTEXITCODE -eq -1978335212) {
+        return
+    }
+
+    # -1978335209 = pinned version no longer published in the winget repo.
+    # Old manifests get pruned over time, so a once-valid pin can disappear.
+    # Surface the still-available versions so the pin in $Versions can be updated.
+    if ($LASTEXITCODE -eq -1978335209) {
+        Write-Warning "Pinned version '$Version' of $Id is no longer in the winget repo."
+        Write-Warning "Available versions (update the pin in `$Versions accordingly):"
+        & winget show --id $Id --source winget --versions
+        throw "Stale version pin for $Id (pinned '$Version'). Update `$Versions and re-run."
+    }
+
+    throw "winget install failed for $Id (exit code $LASTEXITCODE)"
+}
+
+function Install-Maven {
+    param([string]$Version)
+    Write-Step "Installing Apache Maven $Version (direct download from Apache)"
+
+    $targetParent = 'C:\Program Files'
+    $mvnHome = Join-Path $targetParent "apache-maven-$Version"
+
+    if (Test-Path (Join-Path $mvnHome 'bin\mvn.cmd')) {
+        Write-Host "Maven $Version already present at $mvnHome"
+    } else {
+        $zipName    = "apache-maven-$Version-bin.zip"
+        $zipPath    = Join-Path $env:TEMP $zipName
+        # dlcdn serves current releases; archive is the permanent fallback once superseded.
+        $primaryUrl = "https://dlcdn.apache.org/maven/maven-3/$Version/binaries/$zipName"
+        $archiveUrl = "https://archive.apache.org/dist/maven/maven-3/$Version/binaries/$zipName"
+
+        Write-Host "Downloading $primaryUrl"
+        try {
+            Invoke-WebRequest -Uri $primaryUrl -OutFile $zipPath -UseBasicParsing
+        } catch {
+            Write-Warning "Primary mirror failed ($($_.Exception.Message)); falling back to archive.apache.org"
+            Invoke-WebRequest -Uri $archiveUrl -OutFile $zipPath -UseBasicParsing
+        }
+
+        Write-Host "Extracting to $targetParent"
+        Expand-Archive -Path $zipPath -DestinationPath $targetParent -Force
+        Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+    }
+
+    # Put Maven's bin on the machine PATH (idempotent) so 'mvn' resolves.
+    # winget used to do this for us; with a manual install we own it.
+    $mvnBin = Join-Path $mvnHome 'bin'
+    $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+    if (($machinePath -split ';') -notcontains $mvnBin) {
+        [Environment]::SetEnvironmentVariable('Path', "$machinePath;$mvnBin", 'Machine')
+        Write-Host "Added $mvnBin to machine PATH"
     }
 }
 
@@ -120,6 +179,9 @@ foreach ($pkg in $Packages) {
     Install-WingetPackage @pkg
 }
 
+# 2b. Install Maven separately (not available on winget)
+Install-Maven -Version $Versions.Maven
+
 # 3. Refresh PATH so freshly-installed tools are callable in this session
 Update-SessionPath
 
@@ -127,10 +189,10 @@ Update-SessionPath
 Write-Step 'Setting JAVA_HOME and M2_HOME (machine-wide)'
 
 $javaHome = Get-ChildItem 'C:\Program Files\Eclipse Adoptium' -Directory -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -like 'jdk-21*' } |
+            Where-Object { $_.Name -like 'jdk-25*' } |
             Select-Object -First 1 -ExpandProperty FullName
 if (-not $javaHome) {
-    throw 'Could not locate the Temurin JDK 21 installation directory under C:\Program Files\Eclipse Adoptium.'
+    throw 'Could not locate the Temurin JDK 25 installation directory under C:\Program Files\Eclipse Adoptium.'
 }
 [Environment]::SetEnvironmentVariable('JAVA_HOME', $javaHome, 'Machine')
 Write-Host "JAVA_HOME = $javaHome"
@@ -213,6 +275,8 @@ Show-Version 'node' 'node'
 Show-Version 'npm'  'npm'
 Show-Version 'ng'   'ng'
 Show-Version 'code' 'code'
+Show-Version 'git'  'git'
+Show-Version 'az'   'az'
 
 Write-Host ''
 Write-Host 'Setup complete.' -ForegroundColor Green
