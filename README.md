@@ -3,12 +3,14 @@
 One-shot bootstrap for the annual Java + Angular training. Installs a pinned
 toolchain on a fresh Windows 10/11 laptop:
 
-- Eclipse Temurin JDK 21
+- Eclipse Temurin JDK 25
 - Apache Maven
 - Node.js LTS
 - Angular CLI (global via npm)
-- Visual Studio Code
+- Vscode
 - pgAdmin 4
+- AZ
+- Git
 
 Sets `JAVA_HOME` and `M2_HOME` system-wide, and (by default) creates a `T:`
 drive alias pointing at `C:\TrainingWorkspace` for course materials.
@@ -115,3 +117,19 @@ above to pick the closest still-available version and re-tag.
 | `winget install failed ... exit code -1978335212` | Pinned version no longer in winget repo; bump it and re-tag |
 
 The transcript of each run is written to `%TEMP%\training-setup-<timestamp>.log`.
+
+
+# Install Zscaler 
+Import-Certificate -FilePath "C:\Users\WDAGUtilityAccount\Downloads\zscaler.crt" -CertStoreLocation Cert:\LocalMachine\Root
+
+# Install winget 
+Install-PackageProvider -Name NuGet -Force | Out-Null
+Install-Module Microsoft.WinGet.Client -Force -Repository PSGallery
+Repair-WinGetPackageManager -AllUsers
+winget --version
+
+# Make script executable
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass 
+
+# Execute script
+.\setup.ps1![Uploading image.png…]()
